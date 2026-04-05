@@ -73,6 +73,7 @@ function getDepartureWinner(flight) {
   const scheduled = toDate(flight.departure?.scheduled);
 
   if (!actual) return 'delayedDeparture';
+  if (!scheduled) return 'onTimeDeparture';
 
   const diffMs = actual.getTime() - scheduled.getTime();
   return diffMs > FIFTEEN_MINUTES_MS ? 'delayedDeparture' : 'onTimeDeparture';
@@ -87,6 +88,7 @@ function getArrivalWinner(flight) {
   const scheduled = toDate(flight.arrival?.scheduled);
 
   if (!actual) return 'delayedArrival';
+  if (!scheduled) return 'onTimeArrival';
 
   const diffMs = actual.getTime() - scheduled.getTime();
   return diffMs > FIFTEEN_MINUTES_MS ? 'delayedArrival' : 'onTimeArrival';
