@@ -187,7 +187,13 @@ function initializeFirestore() {
   const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (!serviceAccountJson) return null;
 
-  const serviceAccount = JSON.parse(serviceAccountJson);
+  let serviceAccount;
+  try {
+    serviceAccount = JSON.parse(serviceAccountJson);
+  } catch (error) {
+    throw new Error(`Failed to parse FIREBASE_SERVICE_ACCOUNT: ${error.message}`);
+  }
+
   initializeApp({ credential: cert(serviceAccount) });
   return getFirestore();
 }
