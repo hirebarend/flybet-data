@@ -27,6 +27,11 @@ jobs:
           AERODATABOX_API_KEY: ${{ secrets.AERODATABOX_API_KEY }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
+      - name: Settle bets
+        run: node src/settle-bets.js
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
       - name: Commit and push changes
         run: |
           git config user.name "github-actions[bot]"
