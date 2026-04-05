@@ -18,10 +18,14 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Install dependencies
+        run: npm ci
+
       - name: Fetch and update flight data
         run: node src/index.js
         env:
           AERODATABOX_API_KEY: ${{ secrets.AERODATABOX_API_KEY }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
       - name: Commit and push changes
         run: |
