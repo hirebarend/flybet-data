@@ -212,7 +212,7 @@ async function syncToFirestore(db, flights) {
 
     for (const flight of chunk) {
       const docRef = db.collection('flights').doc(flight.id);
-      batch.set(docRef, flight);
+      batch.set(docRef, flight, { merge: true });
     }
 
     await batch.commit();
