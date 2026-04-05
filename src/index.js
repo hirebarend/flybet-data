@@ -6,6 +6,9 @@ const { getAirportDepartures, getFlightStatus, sleep } = require('./api');
 const AIRPORTS = ['JNB', 'CPT', 'DUR', 'PLZ', 'BFN', 'GRJ', 'ELS'];
 const DATA_FILE = path.join(__dirname, '..', 'data', 'flights.jsonl');
 const API_DELAY_MS = 1000;
+const FIDS_MAX_WINDOW_HOURS = 12; // AeroDataBox FIDS endpoint limit
+const UPCOMING_WINDOW_HOURS = 24; // How far ahead to fetch flights
+const PAST_UPDATE_WINDOW_HOURS = 48; // How far back to update flight statuses
 
 // --- Helpers ---
 
@@ -65,8 +68,8 @@ function parseFIDSFlight(dep, queriedAirport) {
 
 async function fetchUpcomingFlights(apiKey) {
   const now = new Date();
-  const mid = new Date(now.getTime() + 12 * 60 * 60 * 1000);
-  const end = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const mid = new Date(now.getTime() + FIDS_MAX_WINDOW_HOURS * 60 * 60 * 1000);
+  const end = new Date(now.getTime() + UPCOMING_WINDOW_HOURS * 60 * 60 * 1000);
 
   // FIDS endpoint has a 12-hour max window, so split into two chunks
   const windows = [
@@ -98,7 +101,7 @@ async function fetchUpcomingFlights(apiKey) {
 
 async function updatePastFlights(flights, apiKey) {
   const now = new Date();
-  const cutoff = new Date(now.getTime() - 48 * 60 * 60 * 1000);
+  const cutoff = new Date(now.getTime() - PAST_UPDATE_WINDOW_HOURS * 60 * 60 * 1000);
   let updated = 0;
 
   for (const flight of flights) {
