@@ -3,6 +3,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const FLYSAFAIR_IATA_CODE = 'FA';
+const FLYSAFAIR_AIRLINE_NAME = 'FlySafair';
 const SOUTH_AFRICAN_AIRPORTS = ['JNB', 'CPT', 'DUR', 'PLZ', 'BFN', 'GRJ', 'ELS'];
 const FLIGHTS_DATA_FILE = path.join(__dirname, '..', 'data', 'flights.jsonl');
 const API_BASE_URL = 'https://aerodatabox.p.rapidapi.com';
@@ -70,10 +71,17 @@ function parseFlightNumber(flightNumberString) {
 }
 
 /**
+ * Format a parsed flight number object back to a full string, e.g. "FA212".
+ */
+function formatFullFlightNumber(flightNumber) {
+  return `${flightNumber.iataCode}${flightNumber.number}`;
+}
+
+/**
  * Generate a deterministic unique ID for a flight based on its number and scheduled departure.
  */
 function generateFlightId(flightNumber, scheduledDepartureTime) {
-  const raw = `${flightNumber.iataCode}${flightNumber.number}::${(scheduledDepartureTime || '').slice(0, 16)}`;
+  const raw = `${formatFullFlightNumber(flightNumber)}::${(scheduledDepartureTime || '').slice(0, 16)}`;
   return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16);
 }
 
@@ -81,7 +89,7 @@ function generateFlightId(flightNumber, scheduledDepartureTime) {
  * Create a lookup key for deduplication: "FA212::2026-04-05T11:30".
  */
 function createFlightLookupKey(flight) {
-  return `${flight.flight.iataCode}${flight.flight.number}::${(flight.departure.scheduled || '').slice(0, 16)}`;
+  return `${formatFullFlightNumber(flight.flight)}::${(flight.departure.scheduled || '').slice(0, 16)}`;
 }
 
 /**
@@ -103,7 +111,7 @@ function mapDepartureToFlightRecord(departureEntry, queriedAirportCode) {
     id: generateFlightId(flightNumber, scheduledDeparture),
     flight: flightNumber,
     airline: {
-      name: departureEntry.airline?.name || 'FlySafair',
+      name: departureEntry.airline?.name || FLYSAFAIR_AIRLINE_NAME,
     },
     departure: {
       airport: {
@@ -144,7 +152,7 @@ function migrateOldFlightRecord(record) {
   return {
     id: generateFlightId(flightNumber, scheduledDeparture),
     flight: flightNumber,
-    airline: { name: 'FlySafair' },
+    airline: { name: FLYSAFAIR_AIRLINE_NAME },
     departure: {
       airport: {
         code: record.departureAirport || null,
@@ -270,7 +278,7 @@ async function main() {
 
     try {
       const flightDateLocal = flight.departure.scheduled.slice(0, 10);
-      const fullFlightNumber = `${flight.flight.iataCode}${flight.flight.number}`;
+      const fullFlightNumber = formatFullFlightNumber(flight.flight);
       const statusApiPath = `/flights/number/${encodeURIComponent(fullFlightNumber)}/${flightDateLocal}`;
       const statusResults = await fetchFromApi(statusApiPath, apiKey) || [];
 
@@ -292,8 +300,7 @@ async function main() {
         }
       }
     } catch (error) {
-      const fullFlightNumber = `${flight.flight.iataCode}${flight.flight.number}`;
-      console.error(`  Status error ${fullFlightNumber}: ${error.message}`);
+      console.error(`  Status error ${formatFullFlightNumber(flight.flight)}: ${error.message}`);
     }
     await delay(API_REQUEST_DELAY_MS);
   }
