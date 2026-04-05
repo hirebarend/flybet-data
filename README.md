@@ -31,7 +31,7 @@ JNB, CPT, DUR, PLZ, BFN, GRJ, ELS
 
 ## Setup
 
-1. Sign up for an [AeroDataBox API key](https://apimarket.aerodatabox.com/)
+1. Sign up for [AeroDataBox on RapidAPI](https://rapidapi.com/aedbx-aedbx/api/aerodatabox)
 2. Add the key as a repository secret named `AERODATABOX_API_KEY`
 3. The workflow runs automatically every 3 hours, or trigger manually via Actions → Update FlySafair Flights → Run workflow
 

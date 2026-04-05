@@ -1,4 +1,4 @@
-const BASE_URL = 'https://prod.api.market/api/v1/aedbx/aerodatabox';
+const BASE_URL = 'https://aerodatabox.p.rapidapi.com';
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -11,7 +11,8 @@ async function apiRequest(path, apiKey) {
   const response = await fetch(url, {
     headers: {
       'Accept': 'application/json',
-      'x-magicapi-key': apiKey,
+      'x-rapidapi-host': 'aerodatabox.p.rapidapi.com',
+      'x-rapidapi-key': apiKey,
     },
   });
 
