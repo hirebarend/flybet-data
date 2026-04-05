@@ -4,23 +4,85 @@ const crypto = require('crypto');
 const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
 
-const FLYSAFAIR_IATA_CODE = 'FA';
-const FLYSAFAIR_AIRLINE_NAME = 'FlySafair';
-const SOUTH_AFRICAN_AIRPORTS = ['JNB', 'CPT', 'DUR', 'PLZ', 'BFN', 'GRJ', 'ELS'];
+const SOUTH_AFRICAN_AIRPORTS = ['JNB', 'CPT', 'DUR'];
 const FLIGHTS_DATA_FILE = path.join(__dirname, '..', 'data', 'flights.jsonl');
 const API_BASE_URL = 'https://aerodatabox.p.rapidapi.com';
-const API_REQUEST_DELAY_MS = 1000;
-const MAX_DEPARTURES_WINDOW_HOURS = 12; // AeroDataBox airport departures endpoint limit
-const UPCOMING_FLIGHTS_WINDOW_HOURS = 24; // How far ahead to fetch flights
-const PAST_STATUS_UPDATE_WINDOW_HOURS = 48; // How far back to update flight statuses
+const API_DELAY_MS = 1000;
+const WINDOW_HOURS = 12;
+const SAST_OFFSET_MS = 2 * 60 * 60 * 1000;
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/**
- * Fetch JSON from the AeroDataBox API. Returns null for 204 (no content).
- */
+function toLocalTimeParam(date) {
+  return new Date(date.getTime() + SAST_OFFSET_MS).toISOString().slice(0, 16);
+}
+
+function toUtcIso(value) {
+  if (!value) { return null; }
+  return value.replace(' ', 'T');
+}
+
+function parseFlightNumber(raw) {
+  const match = (raw || '').match(/^([A-Z]{2})\s*(\d+)$/);
+  return match
+    ? { iataCode: match[1], number: match[2] }
+    : { iataCode: '', number: raw || '' };
+}
+
+function formatFlightNumber(flight) {
+  return `${flight.iataCode}${flight.number}`;
+}
+
+function generateFlightId(flight, scheduledDeparture) {
+  const raw = `${formatFlightNumber(flight)}::${(scheduledDeparture || '').slice(0, 16)}`;
+  return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16);
+}
+
+function createLookupKey(record) {
+  return `${formatFlightNumber(record.flight)}::${(record.departure.scheduled || '').slice(0, 16)}`;
+}
+
+function isFlySafairFlight(entry) {
+  return entry.airline?.iata === 'FA' || entry.number.startsWith('FA');
+}
+
+function mapDeparture(entry, airportCode) {
+  const flight = parseFlightNumber(entry.number);
+  const scheduledDeparture = toUtcIso(entry.departure?.scheduledTime?.utc);
+
+  return {
+    id: generateFlightId(flight, scheduledDeparture),
+    flight,
+    airline: { name: entry.airline?.name || 'FlySafair' },
+    departure: {
+      airport: {
+        code: entry.departure?.airport?.iata || airportCode,
+        name: entry.departure?.airport?.name || null,
+      },
+      scheduled: scheduledDeparture,
+      actual: toUtcIso(entry.departure?.revisedTime?.utc) || null,
+      terminal: entry.departure?.terminal || null,
+      gate: entry.departure?.gate || null,
+    },
+    arrival: {
+      airport: {
+        code: entry.arrival?.airport?.iata || null,
+        name: entry.arrival?.airport?.name || null,
+      },
+      scheduled: toUtcIso(entry.arrival?.scheduledTime?.utc) || null,
+      actual: toUtcIso(entry.arrival?.revisedTime?.utc) || null,
+      terminal: entry.arrival?.terminal || null,
+    },
+    status: entry.status || null,
+    aircraft: {
+      model: entry.aircraft?.model || null,
+      registration: entry.aircraft?.reg || null,
+    },
+  };
+}
+
 async function fetchFromApi(apiPath, apiKey) {
   const url = `${API_BASE_URL}${apiPath}`;
   console.log(`  GET ${apiPath}`);
@@ -33,7 +95,7 @@ async function fetchFromApi(apiPath, apiKey) {
     },
   });
 
-  if (response.status === 204) return null;
+  if (response.status === 204) { return null; }
 
   if (!response.ok) {
     const body = await response.text();
@@ -43,176 +105,48 @@ async function fetchFromApi(apiPath, apiKey) {
   return response.json();
 }
 
-/**
- * Convert a UTC Date to South African Standard Time (UTC+2) string for API parameters.
- * Returns format YYYY-MM-DDTHH:mm (required by AeroDataBox local-time endpoints).
- */
-function toSouthAfricanLocalTimeString(date) {
-  const southAfricanTime = new Date(date.getTime() + 2 * 60 * 60 * 1000);
-  return southAfricanTime.toISOString().slice(0, 16);
+async function fetchDepartures(airportCode, from, to, apiKey) {
+  const apiPath = `/flights/airports/iata/${airportCode}/${toLocalTimeParam(from)}/${toLocalTimeParam(to)}`
+    + '?withLeg=true&direction=Departure&withCodeshared=false&withCargo=false&withPrivate=false';
+
+  const data = await fetchFromApi(apiPath, apiKey);
+  return (data?.departures || [])
+    .filter(isFlySafairFlight)
+    .map(entry => mapDeparture(entry, airportCode));
 }
 
-/**
- * Normalize a date-time string to ISO 8601 format.
- * The API may return "2026-04-05 11:30+02:00"; this converts to "2026-04-05T11:30+02:00".
- */
-function normalizeToIsoDateTime(dateTimeString) {
-  if (!dateTimeString) return null;
-  return dateTimeString.replace(' ', 'T');
-}
-
-/**
- * Parse a flight number string like "FA 212" into its airline code and number components.
- */
-function parseFlightNumber(flightNumberString) {
-  const match = (flightNumberString || '').match(/^([A-Z]{2})\s*(\d+)$/);
-  if (match) {
-    return { iataCode: match[1], number: match[2] };
+function mergeFlightData(existing, incoming) {
+  if (incoming.departure.actual) { existing.departure.actual = incoming.departure.actual; }
+  if (incoming.arrival.actual) { existing.arrival.actual = incoming.arrival.actual; }
+  if (incoming.status && incoming.status !== 'Unknown') { existing.status = incoming.status; }
+  if (incoming.departure.airport.name && !existing.departure.airport.name) {
+    existing.departure.airport.name = incoming.departure.airport.name;
   }
-  return { iataCode: '', number: flightNumberString || '' };
+  if (incoming.arrival.airport.name && !existing.arrival.airport.name) {
+    existing.arrival.airport.name = incoming.arrival.airport.name;
+  }
+  if (incoming.aircraft?.model) { existing.aircraft.model = incoming.aircraft.model; }
+  if (incoming.aircraft?.registration) { existing.aircraft.registration = incoming.aircraft.registration; }
 }
 
-/**
- * Format a parsed flight number object back to a full string, e.g. "FA212".
- */
-function formatFullFlightNumber(flightNumber) {
-  return `${flightNumber.iataCode}${flightNumber.number}`;
-}
-
-/**
- * Generate a deterministic unique ID for a flight based on its number and scheduled departure.
- */
-function generateFlightId(flightNumber, scheduledDepartureTime) {
-  const raw = `${formatFullFlightNumber(flightNumber)}::${(scheduledDepartureTime || '').slice(0, 16)}`;
-  return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16);
-}
-
-/**
- * Create a lookup key for deduplication: "FA212::2026-04-05T11:30".
- */
-function createFlightLookupKey(flight) {
-  return `${formatFullFlightNumber(flight.flight)}::${(flight.departure.scheduled || '').slice(0, 16)}`;
-}
-
-/**
- * Check if a departure entry belongs to FlySafair.
- */
-function isFlySafairFlight(departureEntry) {
-  return departureEntry.airline?.iata === FLYSAFAIR_IATA_CODE
-    || departureEntry.number.startsWith(FLYSAFAIR_IATA_CODE);
-}
-
-/**
- * Convert an API departure entry into the structured flight record format.
- */
-function mapDepartureToFlightRecord(departureEntry, queriedAirportCode) {
-  const flightNumber = parseFlightNumber(departureEntry.number);
-  const scheduledDeparture = normalizeToIsoDateTime(departureEntry.departure?.scheduledTime?.local);
-
-  return {
-    id: generateFlightId(flightNumber, scheduledDeparture),
-    flight: flightNumber,
-    airline: {
-      name: departureEntry.airline?.name || FLYSAFAIR_AIRLINE_NAME,
-    },
-    departure: {
-      airport: {
-        code: departureEntry.departure?.airport?.iata || queriedAirportCode,
-        name: departureEntry.departure?.airport?.name || null,
-      },
-      scheduled: scheduledDeparture,
-      actual: normalizeToIsoDateTime(departureEntry.departure?.revisedTime?.local) || null,
-      terminal: departureEntry.departure?.terminal || null,
-      gate: departureEntry.departure?.gate || null,
-    },
-    arrival: {
-      airport: {
-        code: departureEntry.arrival?.airport?.iata || null,
-        name: departureEntry.arrival?.airport?.name || null,
-      },
-      scheduled: normalizeToIsoDateTime(departureEntry.arrival?.scheduledTime?.local) || null,
-      actual: normalizeToIsoDateTime(departureEntry.arrival?.revisedTime?.local) || null,
-      terminal: departureEntry.arrival?.terminal || null,
-    },
-    status: departureEntry.status || null,
-    aircraft: {
-      model: departureEntry.aircraft?.model || null,
-      registration: departureEntry.aircraft?.reg || null,
-    },
-  };
-}
-
-/**
- * Migrate an old-format flight record to the new structured format.
- */
-function migrateOldFlightRecord(record) {
-  if (record.flight && record.id) return record; // Already in new format
-
-  const flightNumber = parseFlightNumber(record.flightNumber);
-  const scheduledDeparture = normalizeToIsoDateTime(record.scheduledDeparture);
-
-  return {
-    id: generateFlightId(flightNumber, scheduledDeparture),
-    flight: flightNumber,
-    airline: { name: FLYSAFAIR_AIRLINE_NAME },
-    departure: {
-      airport: {
-        code: record.departureAirport || null,
-        name: null,
-      },
-      scheduled: scheduledDeparture,
-      actual: normalizeToIsoDateTime(record.actualDeparture) || null,
-      terminal: null,
-      gate: null,
-    },
-    arrival: {
-      airport: {
-        code: record.arrivalAirport || null,
-        name: null,
-      },
-      scheduled: normalizeToIsoDateTime(record.scheduledArrival) || null,
-      actual: normalizeToIsoDateTime(record.actualArrival) || null,
-      terminal: null,
-    },
-    status: record.status || null,
-    aircraft: { model: null, registration: null },
-  };
-}
-
-/**
- * Initialize Firestore using a service account JSON from an environment variable.
- * Returns null if the environment variable is not set.
- */
 function initializeFirestore() {
   const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
-  if (!serviceAccountJson) return null;
+  if (!serviceAccountJson) { return null; }
 
-  let serviceAccount;
-  try {
-    serviceAccount = JSON.parse(serviceAccountJson);
-  } catch (error) {
-    throw new Error(`Failed to parse FIREBASE_SERVICE_ACCOUNT: ${error.message}`);
-  }
-
-  initializeApp({ credential: cert(serviceAccount) });
+  initializeApp({ credential: cert(JSON.parse(serviceAccountJson)) });
   return getFirestore();
 }
 
-/**
- * Push all flight records to the Firestore "flights" collection.
- * Uses the flight id as the document ID for upsert behavior.
- */
 async function syncToFirestore(db, flights) {
   console.log(`Syncing ${flights.length} flights to Firestore...`);
-  const BATCH_SIZE = 500; // Firestore batch write limit
+  const BATCH_SIZE = 500;
 
   for (let i = 0; i < flights.length; i += BATCH_SIZE) {
     const batch = db.batch();
     const chunk = flights.slice(i, i + BATCH_SIZE);
 
     for (const flight of chunk) {
-      const docRef = db.collection('flights').doc(flight.id);
-      batch.set(docRef, flight, { merge: true });
+      batch.set(db.collection('flights').doc(flight.id), flight, { merge: true });
     }
 
     await batch.commit();
@@ -231,136 +165,71 @@ async function main() {
 
   const db = initializeFirestore();
 
-  // Load existing flights from JSONL, migrating old records to the new schema
-  const existingFlights = [];
+  const flightsByKey = new Map();
   if (fs.existsSync(FLIGHTS_DATA_FILE)) {
     const content = fs.readFileSync(FLIGHTS_DATA_FILE, 'utf8').trim();
     if (content) {
       for (const line of content.split('\n')) {
-        existingFlights.push(migrateOldFlightRecord(JSON.parse(line)));
+        const flight = JSON.parse(line);
+        flightsByKey.set(createLookupKey(flight), flight);
       }
     }
   }
-  console.log(`Loaded ${existingFlights.length} existing flights`);
+  console.log(`Loaded ${flightsByKey.size} existing flights`);
 
-  const flightsByKey = new Map();
-  for (const flight of existingFlights) {
-    flightsByKey.set(createFlightLookupKey(flight), flight);
-  }
-
-  // Fetch upcoming flights (next 24 hours) via airport departures endpoint.
-  // The endpoint has a 12-hour max window, so we split into two time chunks.
-  console.log('Fetching upcoming flights...');
   const now = new Date();
-  const midPoint = new Date(now.getTime() + MAX_DEPARTURES_WINDOW_HOURS * 60 * 60 * 1000);
-  const endPoint = new Date(now.getTime() + UPCOMING_FLIGHTS_WINDOW_HOURS * 60 * 60 * 1000);
-  const timeWindows = [
-    [toSouthAfricanLocalTimeString(now), toSouthAfricanLocalTimeString(midPoint)],
-    [toSouthAfricanLocalTimeString(midPoint), toSouthAfricanLocalTimeString(endPoint)],
-  ];
+  const pastStart = new Date(now.getTime() - WINDOW_HOURS * 60 * 60 * 1000);
+  const futureEnd = new Date(now.getTime() + WINDOW_HOURS * 60 * 60 * 1000);
 
-  const upcomingFlights = [];
-  for (const airportCode of SOUTH_AFRICAN_AIRPORTS) {
-    for (const [windowStart, windowEnd] of timeWindows) {
-      try {
-        const apiPath = `/flights/airports/iata/${airportCode}/${windowStart}/${windowEnd}`
-          + '?withLeg=true&direction=Departure&withCodeshared=false&withCargo=false&withPrivate=false';
-        const data = await fetchFromApi(apiPath, apiKey);
-        const departures = data?.departures || [];
-        for (const departure of departures) {
-          if (!isFlySafairFlight(departure)) continue;
-          upcomingFlights.push(mapDepartureToFlightRecord(departure, airportCode));
-        }
-      } catch (error) {
-        console.error(`  Departures error ${airportCode} [${windowStart}..${windowEnd}]: ${error.message}`);
-      }
-      await delay(API_REQUEST_DELAY_MS);
-    }
-  }
-  console.log(`Found ${upcomingFlights.length} FlySafair departures`);
-
-  // Merge: add new flights, update existing ones with fresh data
   let addedCount = 0;
-  for (const flight of upcomingFlights) {
-    const key = createFlightLookupKey(flight);
-    if (!flightsByKey.has(key)) {
-      flightsByKey.set(key, flight);
-      addedCount++;
-    } else {
-      const existingFlight = flightsByKey.get(key);
-      if (flight.departure.actual && !existingFlight.departure.actual) {
-        existingFlight.departure.actual = flight.departure.actual;
-      }
-      if (flight.arrival.actual && !existingFlight.arrival.actual) {
-        existingFlight.arrival.actual = flight.arrival.actual;
-      }
-      if (flight.status && flight.status !== 'Unknown') {
-        existingFlight.status = flight.status;
-      }
-      // Update airport names if newly available
-      if (flight.departure.airport.name && !existingFlight.departure.airport.name) {
-        existingFlight.departure.airport.name = flight.departure.airport.name;
-      }
-      if (flight.arrival.airport.name && !existingFlight.arrival.airport.name) {
-        existingFlight.arrival.airport.name = flight.arrival.airport.name;
-      }
-    }
-  }
-  console.log(`Added ${addedCount} new flights`);
+  let updatedCount = 0;
 
-  // Update past flights with actual departure/arrival times via flight status endpoint
-  console.log('Updating past flight statuses...');
-  const allFlights = Array.from(flightsByKey.values());
-  const pastStatusCutoff = new Date(now.getTime() - PAST_STATUS_UPDATE_WINDOW_HOURS * 60 * 60 * 1000);
-  let updatedStatusCount = 0;
-
-  for (const flight of allFlights) {
-    if (!flight.departure.scheduled) continue;
-
-    const scheduledDepartureTime = new Date(flight.departure.scheduled);
-    if (scheduledDepartureTime > now) continue;
-    if (scheduledDepartureTime < pastStatusCutoff) continue;
-    if (flight.status === 'Canceled') continue;
-    if (flight.departure.actual && flight.arrival.actual) continue;
-
+  for (const airportCode of SOUTH_AFRICAN_AIRPORTS) {
     try {
-      const flightDateLocal = flight.departure.scheduled.slice(0, 10);
-      const fullFlightNumber = formatFullFlightNumber(flight.flight);
-      const statusApiPath = `/flights/number/${encodeURIComponent(fullFlightNumber)}/${flightDateLocal}`;
-      const statusResults = await fetchFromApi(statusApiPath, apiKey) || [];
-
-      for (const result of statusResults) {
-        const resultScheduledDeparture = normalizeToIsoDateTime(result.departure?.scheduledTime?.local || '');
-        if ((resultScheduledDeparture || '').slice(0, 16) === flight.departure.scheduled.slice(0, 16)) {
-          flight.departure.actual = normalizeToIsoDateTime(result.departure?.revisedTime?.local)
-            || normalizeToIsoDateTime(result.departure?.runwayTime?.local)
-            || flight.departure.actual;
-          flight.arrival.actual = normalizeToIsoDateTime(result.arrival?.revisedTime?.local)
-            || normalizeToIsoDateTime(result.arrival?.runwayTime?.local)
-            || flight.arrival.actual;
-          if (result.status !== 'Unknown') flight.status = result.status;
-          // Update aircraft info if available from status endpoint
-          if (result.aircraft?.model) flight.aircraft.model = result.aircraft.model;
-          if (result.aircraft?.reg) flight.aircraft.registration = result.aircraft.reg;
-          updatedStatusCount++;
-          break;
+      const pastFlights = await fetchDepartures(airportCode, pastStart, now, apiKey);
+      for (const flight of pastFlights) {
+        const key = createLookupKey(flight);
+        if (flightsByKey.has(key)) {
+          mergeFlightData(flightsByKey.get(key), flight);
+          updatedCount++;
+        } else {
+          flightsByKey.set(key, flight);
+          addedCount++;
         }
       }
     } catch (error) {
-      console.error(`  Status error ${formatFullFlightNumber(flight.flight)}: ${error.message}`);
+      console.error(`  Past departures error ${airportCode}: ${error.message}`);
     }
-    await delay(API_REQUEST_DELAY_MS);
-  }
-  console.log(`Updated ${updatedStatusCount} flights with actual times`);
+    await delay(API_DELAY_MS);
 
-  // Save all flights sorted by scheduled departure time
-  const dataDirectory = path.dirname(FLIGHTS_DATA_FILE);
-  if (!fs.existsSync(dataDirectory)) fs.mkdirSync(dataDirectory, { recursive: true });
+    try {
+      const futureFlights = await fetchDepartures(airportCode, now, futureEnd, apiKey);
+      for (const flight of futureFlights) {
+        const key = createLookupKey(flight);
+        if (flightsByKey.has(key)) {
+          mergeFlightData(flightsByKey.get(key), flight);
+          updatedCount++;
+        } else {
+          flightsByKey.set(key, flight);
+          addedCount++;
+        }
+      }
+    } catch (error) {
+      console.error(`  Future departures error ${airportCode}: ${error.message}`);
+    }
+    await delay(API_DELAY_MS);
+  }
+
+  console.log(`Added ${addedCount} new flights, updated ${updatedCount} existing flights`);
+
+  const allFlights = Array.from(flightsByKey.values());
   allFlights.sort((a, b) => (a.departure.scheduled || '').localeCompare(b.departure.scheduled || ''));
+
+  const dataDir = path.dirname(FLIGHTS_DATA_FILE);
+  if (!fs.existsSync(dataDir)) { fs.mkdirSync(dataDir, { recursive: true }); }
   fs.writeFileSync(FLIGHTS_DATA_FILE, allFlights.map(f => JSON.stringify(f)).join('\n') + '\n');
   console.log(`Saved ${allFlights.length} total flights to ${FLIGHTS_DATA_FILE}`);
 
-  // Sync to Firestore if configured
   if (db) {
     await syncToFirestore(db, allFlights);
   } else {

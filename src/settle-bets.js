@@ -3,16 +3,39 @@ const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 
 const THREE_HOURS_MS = 3 * 60 * 60 * 1000;
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
+const MINIMUM_PROFIT = 25;
 
-/**
- * Convert a Firestore value to a Date. Handles Timestamps, strings, and Date objects.
- * Returns null for null/undefined or unparseable values.
- */
 function toDate(value) {
-  if (value == null) return null;
-  if (typeof value.toDate === 'function') return value.toDate();
+  if (value == null) { return null; }
+  if (typeof value.toDate === 'function') { return value.toDate(); }
   const date = new Date(value);
   return isNaN(date.getTime()) ? null : date;
+}
+
+function calculatePayouts(bets, winningOutcome, allOutcomes) {
+  const marketBets = bets.filter(bet => allOutcomes.includes(bet.outcome));
+  if (marketBets.length === 0) { return []; }
+
+  const winners = marketBets.filter(bet => bet.outcome === winningOutcome);
+  const losers = marketBets.filter(bet => bet.outcome !== winningOutcome);
+  const totalWinnerStake = winners.reduce((sum, bet) => sum + bet.amount, 0);
+  const totalLoserStake = losers.reduce((sum, bet) => sum + bet.amount, 0);
+
+  const payouts = [];
+
+  for (const bet of winners) {
+    const proportionalShare = totalLoserStake === 0
+      ? 0
+      : Math.round((bet.amount / totalWinnerStake) * totalLoserStake);
+    const profit = Math.max(proportionalShare, MINIMUM_PROFIT);
+    payouts.push({ betId: bet.id, userId: bet.userId, payout: bet.amount + profit });
+  }
+
+  for (const bet of losers) {
+    payouts.push({ betId: bet.id, userId: bet.userId, payout: 0 });
+  }
+
+  return payouts;
 }
 
 async function main() {
@@ -27,8 +50,10 @@ async function main() {
 
   console.log('Starting bet settlement...');
 
-  const flightsSnapshot = await db.collection('flights').get();
-  console.log(`Checking ${flightsSnapshot.size} flights`);
+  const flightsSnapshot = await db.collection('flights')
+    .where('settled', '!=', true)
+    .get();
+  console.log(`Checking ${flightsSnapshot.size} unsettled flights`);
 
   let settledCount = 0;
 
@@ -36,125 +61,79 @@ async function main() {
     const flight = flightDoc.data();
     const flightId = flightDoc.id;
 
-    // Skip already-settled flights
-    if (flight.settled === true) continue;
+    const departureTime = toDate(flight.departure?.actual) || toDate(flight.departure?.scheduled);
+    const arrivalTime = toDate(flight.arrival?.actual) || toDate(flight.arrival?.scheduled);
 
-    // Settlement requires 3 hours after the reference time for both departure and arrival.
-    // Reference time = actual if available, otherwise scheduled.
-    const departureRef = toDate(flight.departure?.actual) || toDate(flight.departure?.scheduled);
-    const arrivalRef = toDate(flight.arrival?.actual) || toDate(flight.arrival?.scheduled);
+    if (!departureTime || now < departureTime.getTime() + THREE_HOURS_MS) { continue; }
+    if (!arrivalTime || now < arrivalTime.getTime() + THREE_HOURS_MS) { continue; }
 
-    if (!departureRef || now < departureRef.getTime() + THREE_HOURS_MS) continue;
-    if (!arrivalRef || now < arrivalRef.getTime() + THREE_HOURS_MS) continue;
+    console.log(`\nSettling flight ${flightId}`);
 
-    const flightLabel = flight.flight
-      ? `${flight.flight.iataCode}${flight.flight.number}`
-      : flightId;
-    console.log(`\nSettling ${flightLabel} (${flightId})`);
-
-    // Load all unsettled bets for this flight
     const betsSnapshot = await db.collection('bets')
       .where('flightId', '==', flightId)
       .get();
 
-    const bets = betsSnapshot.docs
+    const unsettledBets = betsSnapshot.docs
       .map(doc => ({ id: doc.id, ...doc.data() }))
       .filter(bet => !bet.settled);
 
-    if (bets.length === 0) {
+    if (unsettledBets.length === 0) {
       await db.collection('flights').doc(flightId).update({ settled: true });
       console.log('  No bets to settle, marked flight as settled');
       settledCount++;
       continue;
     }
 
-    // --- Determine winning outcomes ---
-
-    // Departure: delayed if no actual time, or actual is more than 15 min after scheduled
-    const departureDelayed = !flight.departure?.actual
+    const departureIsDelayed = !flight.departure?.actual
       || (toDate(flight.departure.actual) - toDate(flight.departure.scheduled)) > FIFTEEN_MINUTES_MS;
 
-    // Arrival: delayed if no actual time, or actual is more than 15 min after scheduled
-    const arrivalDelayed = !flight.arrival?.actual
+    const arrivalIsDelayed = !flight.arrival?.actual
       || (toDate(flight.arrival.actual) - toDate(flight.arrival.scheduled)) > FIFTEEN_MINUTES_MS;
 
-    // Cancellation: cancelled if neither actual departure nor actual arrival exists
     const isCancelled = !flight.departure?.actual && !flight.arrival?.actual;
 
-    // --- Calculate pari-mutuel payouts for all three markets ---
-
-    const betPayouts = new Map();   // betId -> payout amount
-    const userCredits = new Map();  // userId -> total amount to credit
-
     const markets = [
-      {
-        outcomes: ['onTimeDeparture', 'delayedDeparture'],
-        winner: departureDelayed ? 'delayedDeparture' : 'onTimeDeparture',
-      },
-      {
-        outcomes: ['onTimeArrival', 'delayedArrival'],
-        winner: arrivalDelayed ? 'delayedArrival' : 'onTimeArrival',
-      },
-      {
-        outcomes: ['cancelled', 'notCancelled'],
-        winner: isCancelled ? 'cancelled' : 'notCancelled',
-      },
+      { outcomes: ['onTimeDeparture', 'delayedDeparture'], winner: departureIsDelayed ? 'delayedDeparture' : 'onTimeDeparture' },
+      { outcomes: ['onTimeArrival', 'delayedArrival'], winner: arrivalIsDelayed ? 'delayedArrival' : 'onTimeArrival' },
+      { outcomes: ['cancelled', 'notCancelled'], winner: isCancelled ? 'cancelled' : 'notCancelled' },
     ];
 
+    const allPayouts = [];
+    const userCredits = new Map();
+
     for (const { outcomes, winner } of markets) {
-      const marketBets = bets.filter(b => outcomes.includes(b.outcome));
-      if (marketBets.length === 0) continue;
-
-      const winners = marketBets.filter(b => b.outcome === winner);
-      const losers = marketBets.filter(b => b.outcome !== winner);
-
-      const totalWinStake = winners.reduce((sum, b) => sum + b.amount, 0);
-      const totalLoseStake = losers.reduce((sum, b) => sum + b.amount, 0);
-
-      // Winners get their stake back plus a proportional share of the losing pool
-      for (const bet of winners) {
-        const payout = totalLoseStake === 0
-          ? bet.amount
-          : Math.round(bet.amount + (bet.amount / totalWinStake) * totalLoseStake);
-        betPayouts.set(bet.id, payout);
-        userCredits.set(bet.userId, (userCredits.get(bet.userId) || 0) + payout);
-      }
-
-      // Losers get nothing (stake was already deducted at placement)
-      for (const bet of losers) {
-        betPayouts.set(bet.id, 0);
+      const payouts = calculatePayouts(unsettledBets, winner, outcomes);
+      for (const { betId, userId, payout } of payouts) {
+        allPayouts.push({ betId, payout });
+        if (payout > 0) {
+          userCredits.set(userId, (userCredits.get(userId) || 0) + payout);
+        }
       }
     }
 
-    const winnerCount = [...betPayouts.values()].filter(p => p > 0).length;
-    console.log(`  ${bets.length} bets, ${winnerCount} winners`);
-
-    // --- Execute settlement in a single Firestore transaction ---
+    const winnerCount = allPayouts.filter(p => p.payout > 0).length;
+    console.log(`  ${unsettledBets.length} bets, ${winnerCount} winners`);
 
     await db.runTransaction(async (transaction) => {
-      // Guard against double-settlement (race condition)
       const freshDoc = await transaction.get(db.collection('flights').doc(flightId));
       if (freshDoc.data()?.settled === true) {
         console.log('  Already settled (race condition), skipping');
         return;
       }
 
-      // Credit each winning user's balance
       for (const [userId, credit] of userCredits) {
         transaction.update(db.collection('users').doc(userId), {
           balance: FieldValue.increment(credit),
         });
       }
 
-      // Mark each bet as settled with its payout
-      for (const [betId, payout] of betPayouts) {
+      for (const { betId, payout } of allPayouts) {
         transaction.update(db.collection('bets').doc(betId), {
           settled: true,
           payout,
         });
       }
 
-      // Mark flight as settled
       transaction.update(db.collection('flights').doc(flightId), {
         settled: true,
       });
