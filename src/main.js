@@ -84,11 +84,10 @@ function extractFormField(html, fieldName) {
 
 /**
  * Calculates tomorrow's date in YYYY-MM-DD format, using South African time (UTC+2).
+ * South Africa does not observe daylight saving time, so UTC+2 is always correct.
  */
 function getTomorrowDateSAST() {
-  const now = new Date();
-  const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
-  const saTime = new Date(utcMs + 2 * 3600000);
+  const saTime = new Date(Date.now() + 2 * 3600000);
   saTime.setDate(saTime.getDate() + 1);
   return saTime.toISOString().split("T")[0];
 }
