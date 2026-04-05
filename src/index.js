@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { initializeApp, cert } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
 
 const FLYSAFAIR_IATA_CODE = 'FA';
 const FLYSAFAIR_AIRLINE_NAME = 'FlySafair';
@@ -177,12 +179,51 @@ function migrateOldFlightRecord(record) {
   };
 }
 
+/**
+ * Initialize Firestore using a service account JSON from an environment variable.
+ * Returns null if the environment variable is not set.
+ */
+function initializeFirestore() {
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (!serviceAccountJson) return null;
+
+  const serviceAccount = JSON.parse(serviceAccountJson);
+  initializeApp({ credential: cert(serviceAccount) });
+  return getFirestore();
+}
+
+/**
+ * Push all flight records to the Firestore "flights" collection.
+ * Uses the flight id as the document ID for upsert behavior.
+ */
+async function syncToFirestore(db, flights) {
+  console.log(`Syncing ${flights.length} flights to Firestore...`);
+  const BATCH_SIZE = 500; // Firestore batch write limit
+
+  for (let i = 0; i < flights.length; i += BATCH_SIZE) {
+    const batch = db.batch();
+    const chunk = flights.slice(i, i + BATCH_SIZE);
+
+    for (const flight of chunk) {
+      const docRef = db.collection('flights').doc(flight.id);
+      batch.set(docRef, flight);
+    }
+
+    await batch.commit();
+    console.log(`  Committed batch ${Math.floor(i / BATCH_SIZE) + 1} (${chunk.length} docs)`);
+  }
+
+  console.log('Firestore sync complete');
+}
+
 async function main() {
   const apiKey = process.env.AERODATABOX_API_KEY;
   if (!apiKey) {
     console.error('AERODATABOX_API_KEY environment variable is required');
     process.exit(1);
   }
+
+  const db = initializeFirestore();
 
   // Load existing flights from JSONL, migrating old records to the new schema
   const existingFlights = [];
@@ -312,6 +353,13 @@ async function main() {
   allFlights.sort((a, b) => (a.departure.scheduled || '').localeCompare(b.departure.scheduled || ''));
   fs.writeFileSync(FLIGHTS_DATA_FILE, allFlights.map(f => JSON.stringify(f)).join('\n') + '\n');
   console.log(`Saved ${allFlights.length} total flights to ${FLIGHTS_DATA_FILE}`);
+
+  // Sync to Firestore if configured
+  if (db) {
+    await syncToFirestore(db, allFlights);
+  } else {
+    console.log('FIREBASE_SERVICE_ACCOUNT not set, skipping Firestore sync');
+  }
 }
 
 main().catch(error => {
