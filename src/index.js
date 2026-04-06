@@ -10,6 +10,7 @@ const API_BASE_URL = 'https://aerodatabox.p.rapidapi.com';
 const API_DELAY_MS = 1000;
 const WINDOW_HOURS = 12;
 const SAST_OFFSET_MS = 2 * 60 * 60 * 1000;
+const SETTLEMENT_ONLY = process.env.SETTLEMENT_ONLY === 'true';
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -181,6 +182,8 @@ async function main() {
   const pastStart = new Date(now.getTime() - WINDOW_HOURS * 60 * 60 * 1000);
   const futureEnd = new Date(now.getTime() + WINDOW_HOURS * 60 * 60 * 1000);
 
+  console.log(`Run mode: ${SETTLEMENT_ONLY ? 'settlement-only (past flights)' : 'full (past + future flights)'}`);
+
   let addedCount = 0;
   let updatedCount = 0;
 
@@ -202,22 +205,24 @@ async function main() {
     }
     await delay(API_DELAY_MS);
 
-    try {
-      const futureFlights = await fetchDepartures(airportCode, now, futureEnd, apiKey);
-      for (const flight of futureFlights) {
-        const key = createLookupKey(flight);
-        if (flightsByKey.has(key)) {
-          mergeFlightData(flightsByKey.get(key), flight);
-          updatedCount++;
-        } else {
-          flightsByKey.set(key, flight);
-          addedCount++;
+    if (!SETTLEMENT_ONLY) {
+      try {
+        const futureFlights = await fetchDepartures(airportCode, now, futureEnd, apiKey);
+        for (const flight of futureFlights) {
+          const key = createLookupKey(flight);
+          if (flightsByKey.has(key)) {
+            mergeFlightData(flightsByKey.get(key), flight);
+            updatedCount++;
+          } else {
+            flightsByKey.set(key, flight);
+            addedCount++;
+          }
         }
+      } catch (error) {
+        console.error(`  Future departures error ${airportCode}: ${error.message}`);
       }
-    } catch (error) {
-      console.error(`  Future departures error ${airportCode}: ${error.message}`);
+      await delay(API_DELAY_MS);
     }
-    await delay(API_DELAY_MS);
   }
 
   console.log(`Added ${addedCount} new flights, updated ${updatedCount} existing flights`);
