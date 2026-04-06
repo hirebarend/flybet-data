@@ -2,7 +2,22 @@ name: Update FlySafair Flights
 
 on:
   schedule:
-    - cron: '0 */3 * * *'
+    # Optimized for FlySafair operations: first flight 05:45 SAST, last landing 22:40 SAST.
+    # AeroDataBox API returns ±12h window. SAST = UTC+2.
+    # 3 runs/day (down from 8) — saves ~62% on API and Actions costs.
+    #
+    # Run 1: 05:00 SAST (03:00 UTC) — Early run before first flight.
+    #   Future window 05:00–17:00 populates morning/afternoon flights for betting.
+    #   Settles overnight flights. Updates previous evening actuals.
+    - cron: '0 3 * * *'
+    # Run 2: 14:00 SAST (12:00 UTC) — Afternoon run.
+    #   Future window 14:00–02:00 populates all evening flights (incl. last at 22:40).
+    #   Updates morning actuals. Settles morning flights (eligible from ~10:45).
+    - cron: '0 12 * * *'
+    # Run 3: 23:30 SAST (21:30 UTC) — Final settlement check.
+    #   Updates evening actuals. Settles flights landing up to ~20:30.
+    #   Future window 23:30–11:30 populates tomorrow's morning flights for overnight betting.
+    - cron: '30 21 * * *'
   workflow_dispatch:
 
 permissions:
