@@ -42,27 +42,35 @@ Winners receive their stake back plus a proportional share of the losing pool (p
 
 ## Airports covered
 
-JNB, CPT, DUR, PLZ, BFN, GRJ, ELS
+CPT, JNB, DUR
 
 ## AeroDataBox API cost analysis
 
-The project uses the [AeroDataBox API on RapidAPI](https://rapidapi.com/aedbx-aedbx/api/aerodatabox). Each run makes:
+The project uses the [AeroDataBox API](https://aerodatabox.com/pricing). The FIDS (airport departures) endpoint is **Tier 2**, costing **2 units per request**. AeroDataBox plans are billed in units, not raw request counts.
 
-| Call type | Airports | Windows | Calls per run |
-|---|---|---|---|
-| Past 12h departures | 7 | 1 | 7 |
-| Future 12h departures | 7 | 1 | 7 |
-| **Total** | | | **14** |
+| Call type | Airports | Calls | Units per call | Units |
+|---|---|---|---|---|
+| Past 12h departures | 3 | 3 | 2 | 6 |
+| Future 12h departures | 3 | 3 | 2 | 6 |
+| **Total per run** | | **6** | | **12** |
 
 With the workflow running every 3 hours (8 runs/day):
 
-| Period | API calls |
-|---|---|
-| Per run | 14 |
-| Per day | 112 |
-| Per month (30 days) | **3,360** |
+| Period | Requests | Units |
+|---|---|---|
+| Per run | 6 | 12 |
+| Per day | 48 | 96 |
+| Per month (30 days) | 1,440 | **2,880** |
 
-The **free plan provides 500 requests/month**, which will be exceeded within the first 5 days. A paid plan is required for continuous operation.
+### Plan comparison (RapidAPI)
+
+| Plan | Units/month | Price | Sufficient? |
+|---|---|---|---|
+| Basic (Free) | 600 | Free | ❌ Lasts ~6.25 days |
+| **Pro** | **6,000** | **$5.35/mo** | **✅ Covers ~2× monthly usage** |
+| Ultra | 60,000 | $32/mo | ✅ Covers ~20× monthly usage |
+
+The **Pro plan** ($5.35/month) comfortably covers 2,880 units/month with room to spare.
 
 ## Setup
 
