@@ -2,22 +2,20 @@ name: Update FlySafair Flights
 
 on:
   schedule:
-    # Optimized for FlySafair operations: first flight 05:45 SAST, last landing 22:40 SAST.
-    # AeroDataBox API returns ±12h window. SAST = UTC+2.
-    # 3 runs/day (down from 8) — saves ~62% on API and Actions costs.
+    # Hourly runs from 03:00–22:00 UTC (05:00–00:00 SAST).
+    # FlySafair operates 05:45–22:40 SAST; settlement buffer is 1 hour after arrival.
     #
-    # Run 1: 05:00 SAST (03:00 UTC) — Early run before first flight.
-    #   Future window 05:00–17:00 populates morning/afternoon flights for betting.
-    #   Settles overnight flights. Updates previous evening actuals.
-    - cron: '0 3 * * *'
-    # Run 2: 14:00 SAST (12:00 UTC) — Afternoon run.
-    #   Future window 14:00–02:00 populates all evening flights (incl. last at 22:40).
-    #   Updates morning actuals. Settles morning flights (eligible from ~10:45).
-    - cron: '0 12 * * *'
-    # Run 3: 23:30 SAST (21:30 UTC) — Final settlement check.
-    #   Updates evening actuals. Settles flights landing up to ~20:30.
-    #   Future window 23:30–11:30 populates tomorrow's morning flights for overnight betting.
-    - cron: '30 21 * * *'
+    # Full runs (past + future flights, 6 API calls) at 03:00, 12:00, 21:00 UTC.
+    # Settlement-only runs (past flights only, 3 API calls) at all other hours.
+    #
+    # API budget (tier 2 = 2 credits/call, 6,000 credits/month):
+    #   Full runs:       3/day × 6 calls × 2 credits =  36 credits/day
+    #   Settlement runs: 17/day × 3 calls × 2 credits = 102 credits/day
+    #   Total: 138 credits/day × 31 days = 4,278 credits/month (71% of budget)
+    #
+    # Avg settlement wait ≈ 1.5 h (1 h buffer + 0.5 h avg until next run).
+    # Max settlement wait ≈ 2 h (1 h buffer + 1 h until next run).
+    - cron: '0 3-22 * * *'
   workflow_dispatch:
 
 permissions:
@@ -36,11 +34,28 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Determine run mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual run — full mode"
+            echo "SETTLEMENT_ONLY=false" >> $GITHUB_ENV
+          else
+            HOUR=$(date -u +%H)
+            if [ "$HOUR" = "03" ] || [ "$HOUR" = "12" ] || [ "$HOUR" = "21" ]; then
+              echo "Full run (past + future flights)"
+              echo "SETTLEMENT_ONLY=false" >> $GITHUB_ENV
+            else
+              echo "Settlement-only run (past flights only)"
+              echo "SETTLEMENT_ONLY=true" >> $GITHUB_ENV
+            fi
+          fi
+
       - name: Fetch and update flight data
         run: node src/index.js
         env:
           AERODATABOX_API_KEY: ${{ secrets.AERODATABOX_API_KEY }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          SETTLEMENT_ONLY: ${{ env.SETTLEMENT_ONLY }}
 
       - name: Settle bets
         run: node src/settle-bets.js

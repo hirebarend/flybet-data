@@ -1,7 +1,7 @@
 const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 
-const THREE_HOURS_MS = 3 * 60 * 60 * 1000;
+const ONE_HOUR_MS = 1 * 60 * 60 * 1000;
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
 const MINIMUM_PROFIT = 25;
 
@@ -64,8 +64,8 @@ async function main() {
     const departureTime = toDate(flight.departure?.actual) || toDate(flight.departure?.scheduled);
     const arrivalTime = toDate(flight.arrival?.actual) || toDate(flight.arrival?.scheduled);
 
-    if (!departureTime || now < departureTime.getTime() + THREE_HOURS_MS) { continue; }
-    if (!arrivalTime || now < arrivalTime.getTime() + THREE_HOURS_MS) { continue; }
+    if (!departureTime || now < departureTime.getTime() + ONE_HOUR_MS) { continue; }
+    if (!arrivalTime || now < arrivalTime.getTime() + ONE_HOUR_MS) { continue; }
 
     console.log(`\nSettling flight ${flightId}`);
 
