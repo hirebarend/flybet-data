@@ -50,15 +50,15 @@ async function main() {
 
   console.log('Starting bet settlement...');
 
-  const flightsSnapshot = await db.collection('flights')
-    .where('settled', '!=', true)
-    .get();
+  const flightsSnapshot = await db.collection('flights').get();
   console.log(`Checking ${flightsSnapshot.size} unsettled flights`);
 
   let settledCount = 0;
 
   for (const flightDoc of flightsSnapshot.docs) {
     const flight = flightDoc.data();
+
+    if (flight.settled === true) { continue; }
     const flightId = flightDoc.id;
 
     const departureTime = toDate(flight.departure?.actual) || toDate(flight.departure?.scheduled);
