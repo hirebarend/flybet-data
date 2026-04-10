@@ -289,7 +289,7 @@ async function main() {
           },
           departure: {
             airport: {
-              code: entry.departure.airport.iata || departureAirportCode,
+              code: departureAirportCode,
             },
             scheduled: scheduledDeparture,
             actual: null,
