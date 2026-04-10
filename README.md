@@ -6,8 +6,8 @@ FlySafair flight sync and bet settlement worker powered by the [AeroDataBox API]
 
 An hourly GitHub Actions workflow runs `src/index.js` and performs the full job in one pass:
 
-1. Fetches future FlySafair departures for the next 24 hours.
-2. Uses the latest stored `departure.scheduled` in Firestore as the start of that window, so it does not repeatedly request the full horizon.
+1. Fetches future FlySafair departures for the next 12 hours, limited to flights where both airports are `JNB` or `CPT`.
+2. Uses the latest stored `departure.scheduled` from those JNB/CPT flights in Firestore as the start of that window, so it does not repeatedly request the full horizon.
 3. Stores new flights with `departure.actual` and `arrival.actual` set to `null`.
 4. Checks flights that are more than 1 hour past their scheduled arrival and still miss either actual timestamp.
 5. Requests movement data for those flights, using only `revisedTime.utc` to update `departure.actual`, `arrival.actual`, `status`, and `cancelled`.
