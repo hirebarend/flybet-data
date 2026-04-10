@@ -4,8 +4,8 @@ const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 
 const SOUTH_AFRICAN_AIRPORTS = ['JNB', 'CPT', 'DUR'];
 const API_BASE_URL = 'https://aerodatabox.p.rapidapi.com';
-const API_DELAY_MS = 1000;
-const FUTURE_WINDOW_HOURS = 24;
+const API_DELAY_MS = 5000;
+const FUTURE_WINDOW_HOURS = 10;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
 const MINIMUM_PROFIT = 25;
