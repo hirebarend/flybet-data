@@ -3,8 +3,7 @@
   "private": true,
   "description": "FlySafair flight data collector using AeroDataBox API",
   "scripts": {
-    "start": "node src/index.js",
-    "settle": "node src/settle-bets.js"
+    "start": "node src/index.js"
   },
   "engines": {
     "node": ">=20"
