@@ -53,17 +53,9 @@ function toFlight(entry, departureAirportCode) {
   const airlineIata = (match[1] || entry.airline?.iata || "FA").toUpperCase();
   const flightNumber = match[2] || String(entry.number).trim();
 
-  const scheduledDeparture = toUtcIso(
-    entry.departure.scheduledTime.utc ||
-      entry.departure.scheduledTime.local ||
-      entry.departure.scheduledTime,
-  );
+  const scheduledDeparture = toUtcIso(entry.departure.scheduledTime?.utc);
 
-  const scheduledArrival = toUtcIso(
-    entry.arrival.scheduledTime.utc ||
-      entry.arrival.scheduledTime.local ||
-      entry.arrival.scheduledTime,
-  );
+  const scheduledArrival = toUtcIso(entry.arrival.scheduledTime?.utc);
 
   return {
     id: createFlightId(airlineIata, flightNumber, scheduledDeparture),
