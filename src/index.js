@@ -1,6 +1,6 @@
-const crypto = require("crypto");
-const { initializeApp, cert, getApps } = require("firebase-admin/app");
+const { initializeApp, cert } = require("firebase-admin/app");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { findLastFlight, findFutureDepartingFlights } = require("./data");
 
 const AIRPORTS = ["JNB", "CPT"];
 const API_BASE_URL = "https://aerodatabox.p.rapidapi.com";
@@ -31,27 +31,18 @@ function toUtcIso(value) {
   return toDate(value).toISOString();
 }
 
-function formatLocalDateTime(date) {
-  return new Date(date.getTime() + SAST_OFFSET_MS).toISOString().slice(0, 16);
-}
-
 function formatLocalDate(date) {
   return new Date(date.getTime() + SAST_OFFSET_MS).toISOString().slice(0, 10);
 }
 
-function createFlightId(airlineIata, flightNumber, scheduledDeparture) {
-  const raw = `${airlineIata}${flightNumber}::${scheduledDeparture.slice(0, 16)}`;
-  return crypto.createHash("sha256").update(raw).digest("hex").slice(0, 16);
-}
-
-async function requestJson(apiPath, apiKey) {
+async function requestJson(apiPath) {
   console.log(`  GET ${apiPath}`);
 
   const response = await fetch(`${API_BASE_URL}${apiPath}`, {
     headers: {
       Accept: "application/json",
       "x-rapidapi-host": "aerodatabox.p.rapidapi.com",
-      "x-rapidapi-key": apiKey,
+      "x-rapidapi-key": process.env.AERODATABOX_API_KEY,
     },
   });
 
@@ -211,159 +202,66 @@ async function settleFlightBets(db, flightId) {
 }
 
 async function main() {
-  const apiKey = process.env.AERODATABOX_API_KEY;
-  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
-
-  initializeApp({ credential: cert(JSON.parse(serviceAccountJson)) });
+  initializeApp({
+    credential: cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)),
+  });
 
   const db = getFirestore();
   const now = new Date();
+  const lastFlight = await findLastFlight(db);
 
-  const latestStoredRouteFlight = (
-    await db
-      .collection("flights")
-      .orderBy("departure.scheduled", "desc")
-      .limit(100)
-      .get()
-  ).docs
-    .map((doc) => doc.data())
-    .find(() => true);
-
-  const latestStoredDeparture = latestStoredRouteFlight
-    ? toDate(latestStoredRouteFlight.departure.scheduled)
-    : null;
-  const futureStart =
-    latestStoredDeparture && latestStoredDeparture > now
-      ? latestStoredDeparture
-      : now;
-  const futureEnd = new Date(now.getTime() + FUTURE_WINDOW_HOURS * ONE_HOUR_MS);
-
-  console.log(
-    `Future flight window: ${futureStart.toISOString()} -> ${futureEnd.toISOString()}`,
-  );
-
-  if (futureStart < futureEnd) {
-    const futureFlights = [];
-
+  if (from < to) {
     for (const departureAirportCode of AIRPORTS) {
-      const apiPath =
-        `/flights/airports/iata/${departureAirportCode}/${formatLocalDateTime(futureStart)}/${formatLocalDateTime(futureEnd)}` +
-        "?withLeg=true&direction=Departure&withCodeshared=false&withCargo=false&withPrivate=false";
+      const from =
+        lastFlight && toDate(lastFlight.departure.scheduled) > now
+          ? toDate(lastFlight.departure.scheduled)
+          : now;
 
-      const data = await requestJson(apiPath, apiKey);
-      const departures = data?.departures || [];
-      let airportFlightCount = 0;
+      const to = new Date(now.getTime() + FUTURE_WINDOW_HOURS * ONE_HOUR_MS);
 
-      for (const entry of departures) {
-        const isFlySafair =
-          entry.airline?.iata === "FA" || String(entry.number).startsWith("FA");
-        const arrivalAirportCode = entry.arrival?.airport?.iata;
-
-        if (!isFlySafair || !AIRPORTS.includes(arrivalAirportCode)) {
-          continue;
-        }
-
-        const match = String(entry.number).match(/^([A-Z]{2})\s*(\d+)$/i) || [];
-        const airlineIata = (
-          match[1] ||
-          entry.airline?.iata ||
-          "FA"
-        ).toUpperCase();
-        const flightNumber = match[2] || String(entry.number).trim();
-        const scheduledDeparture = toUtcIso(
-          entry.departure.scheduledTime.utc ||
-            entry.departure.scheduledTime.local ||
-            entry.departure.scheduledTime,
-        );
-        const scheduledArrival = toUtcIso(
-          entry.arrival.scheduledTime.utc ||
-            entry.arrival.scheduledTime.local ||
-            entry.arrival.scheduledTime,
-        );
-
-        futureFlights.push({
-          id: createFlightId(airlineIata, flightNumber, scheduledDeparture),
-          flight: flightNumber,
-          airline: {
-            iata: airlineIata,
-          },
-          departure: {
-            airport: {
-              code: departureAirportCode,
-            },
-            scheduled: scheduledDeparture,
-            actual: null,
-          },
-          arrival: {
-            airport: {
-              code: arrivalAirportCode,
-            },
-            scheduled: scheduledArrival,
-            actual: null,
-          },
-          aircraft: {
-            model: entry.aircraft?.model || null,
-          },
-          status: entry.status || null,
-          cancelled: false,
-        });
-
-        airportFlightCount += 1;
-      }
-
-      console.log(
-        `  ${departureAirportCode}: fetched ${airportFlightCount} JNB/CPT flights`,
+      const flights = (
+        await findFutureDepartingFlights(departureAirportCode, from, to)
+      ).filter(
+        (flight) =>
+          flight.airline.iata === "FA" &&
+          AIRPORTS.includes(flight.arrival.airport.code),
       );
-      await sleep(API_DELAY_MS);
-    }
 
-    let storedFlightCount = 0;
-
-    for (let index = 0; index < futureFlights.length; index += 400) {
-      const flightChunk = futureFlights.slice(index, index + 400);
-      const batch = db.batch();
-
-      for (const flight of flightChunk) {
-        batch.set(db.collection("flights").doc(flight.id), flight, {
+      for (const flight of flights) {
+        await db.collection("flights").doc(flight.id).set(flight, {
           merge: true,
         });
       }
-
-      await batch.commit();
-      storedFlightCount += flightChunk.length;
     }
-
-    console.log(`Stored ${storedFlightCount} future flights`);
   }
 
-  const movementCutoff = new Date(now.getTime() - ONE_HOUR_MS).toISOString();
-  const movementSnapshot = await db
-    .collection("flights")
-    .where("arrival.scheduled", "<=", movementCutoff)
-    .orderBy("arrival.scheduled")
-    .get();
-
-  const flightsNeedingMovement = movementSnapshot.docs.filter((doc) => {
-    const flight = doc.data();
+  const flights = (
+    await db
+      .collection("flights")
+      .where(
+        "arrival.scheduled",
+        "<=",
+        new Date(now.getTime() - ONE_HOUR_MS).toISOString(),
+      )
+      .orderBy("arrival.scheduled")
+      .get()
+  ).docs.filter((doc) => {
     return (
-      flight.cancelled !== true &&
-      (!flight.departure?.actual || !flight.arrival?.actual)
+      doc.data().cancelled !== true &&
+      (!doc.data().departure?.actual || !doc.data().arrival?.actual)
     );
   });
 
-  console.log(
-    `Flights needing movement refresh: ${flightsNeedingMovement.length}`,
-  );
-
-  for (const doc of flightsNeedingMovement) {
+  for (const doc of flights) {
     const flight = doc.data();
     const departureDate = toDate(flight.departure.scheduled);
-    const flightCode = `${flight.airline.iata || "FA"}${flight.flight}`;
 
     console.log(`Checking movement for ${doc.id}`);
 
-    const apiPath = `/flights/number/${encodeURIComponent(flightCode)}/${formatLocalDate(departureDate)}?dateLocalRole=Departure`;
-    const data = await requestJson(apiPath, apiKey);
+    const data = await requestJson(
+      `/flights/number/${encodeURIComponent(`${flight.airline.iata || "FA"}${flight.flight}`)}/${formatLocalDate(departureDate)}?dateLocalRole=Departure`,
+    );
+
     const movementEntries = Array.isArray(data)
       ? data
       : data?.departure || data?.arrival
