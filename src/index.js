@@ -5,7 +5,7 @@ const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const SOUTH_AFRICAN_AIRPORTS = ['JNB', 'CPT', 'DUR'];
 const API_BASE_URL = 'https://aerodatabox.p.rapidapi.com';
 const API_DELAY_MS = 5000;
-const FUTURE_WINDOW_HOURS = 10;
+const FUTURE_WINDOW_HOURS = 12;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
 const MINIMUM_PROFIT = 25;
@@ -62,15 +62,7 @@ function isFlySafairFlight(entry) {
 }
 
 function getActualTime(node) {
-  return toUtcIso(
-    node?.actualTime?.utc
-    || node?.actualTime?.local
-    || node?.revisedTime?.utc
-    || node?.revisedTime?.local
-    || node?.runwayTime?.actual?.utc
-    || node?.runwayTime?.actual?.local
-    || null
-  );
+  return toUtcIso(node?.revisedTime?.utc || null);
 }
 
 function getScheduledTime(node) {
@@ -85,8 +77,6 @@ function getScheduledTime(node) {
 function mapAirportDeparture(entry, airportCode) {
   const { airlineIata, flightNumber } = parseFlightNumber(entry.number);
   const scheduledDeparture = getScheduledTime(entry.departure);
-  const departureActual = getActualTime(entry.departure);
-  const arrivalActual = getActualTime(entry.arrival);
 
   return {
     id: generateFlightId(airlineIata, flightNumber, scheduledDeparture),
@@ -99,14 +89,14 @@ function mapAirportDeparture(entry, airportCode) {
         code: entry.departure?.airport?.iata || airportCode,
       },
       scheduled: scheduledDeparture,
-      ...(departureActual ? { actual: departureActual } : {}),
+      actual: null,
     },
     arrival: {
       airport: {
         code: entry.arrival?.airport?.iata || null,
       },
       scheduled: getScheduledTime(entry.arrival),
-      ...(arrivalActual ? { actual: arrivalActual } : {}),
+      actual: null,
     },
     aircraft: {
       model: entry.aircraft?.model || null,
@@ -285,53 +275,20 @@ async function syncFutureFlights(db, apiKey, now) {
 
 async function getFlightsNeedingMovementRefresh(db, now) {
   const cutoffIso = new Date(now.getTime() - ONE_HOUR_MS).toISOString();
+  const snapshot = await db.collection('flights')
+    .where('arrival.scheduled', '<=', cutoffIso)
+    .orderBy('arrival.scheduled')
+    .get();
 
-  const [departureSnapshot, arrivalSnapshot] = await Promise.all([
-    db.collection('flights')
-      .where('departure.scheduled', '<=', cutoffIso)
-      .orderBy('departure.scheduled')
-      .get(),
-    db.collection('flights')
-      .where('arrival.scheduled', '<=', cutoffIso)
-      .orderBy('arrival.scheduled')
-      .get(),
-  ]);
+  return snapshot.docs
+    .map(doc => ({ id: doc.id, flight: doc.data() }))
+    .filter(({ flight }) => {
+      if (flight.cancelled === true || !flight.arrival?.scheduled) {
+        return false;
+      }
 
-  const flightsById = new Map();
-
-  for (const doc of departureSnapshot.docs) {
-    const flight = doc.data();
-    if (flight.cancelled === true || flight.departure?.actual || !flight.departure?.scheduled) {
-      continue;
-    }
-
-    flightsById.set(doc.id, {
-      id: doc.id,
-      flight,
-      refreshDeparture: true,
-      refreshArrival: false,
+      return !flight.departure?.actual || !flight.arrival?.actual;
     });
-  }
-
-  for (const doc of arrivalSnapshot.docs) {
-    const flight = doc.data();
-    if (flight.cancelled === true || flight.arrival?.actual || !flight.arrival?.scheduled) {
-      continue;
-    }
-
-    if (flightsById.has(doc.id)) {
-      flightsById.get(doc.id).refreshArrival = true;
-    } else {
-      flightsById.set(doc.id, {
-        id: doc.id,
-        flight,
-        refreshDeparture: false,
-        refreshArrival: true,
-      });
-    }
-  }
-
-  return Array.from(flightsById.values());
 }
 
 function calculatePayouts(bets, winningOutcome, allOutcomes) {
@@ -452,7 +409,7 @@ async function refreshFlightMovements(db, apiKey) {
   console.log(`Flights needing movement refresh: ${candidates.length}`);
 
   for (const candidate of candidates) {
-    const { id, flight, refreshDeparture, refreshArrival } = candidate;
+    const { id, flight } = candidate;
     console.log(`Checking movement for ${id}`);
 
     try {
@@ -461,6 +418,8 @@ async function refreshFlightMovements(db, apiKey) {
       const arrivalActual = getActualTime(movement?.arrival);
       const updates = {};
       let shouldSettle = false;
+      const needsDepartureActual = !flight.departure?.actual;
+      const needsArrivalActual = !flight.arrival?.actual;
 
       if (movement?.status) {
         updates.status = movement.status;
@@ -470,16 +429,16 @@ async function refreshFlightMovements(db, apiKey) {
         updates.aircraft = { model: movement.aircraft.model };
       }
 
-      if (refreshDeparture && departureActual) {
+      if (needsDepartureActual && departureActual) {
         updates['departure.actual'] = departureActual;
         updates.cancelled = false;
       }
 
-      if (refreshArrival && arrivalActual) {
+      if (needsArrivalActual && arrivalActual) {
         updates['arrival.actual'] = arrivalActual;
         updates.cancelled = false;
         shouldSettle = true;
-      } else if (refreshArrival) {
+      } else if (needsArrivalActual) {
         updates.cancelled = true;
         shouldSettle = true;
       }

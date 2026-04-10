@@ -8,9 +8,10 @@ An hourly GitHub Actions workflow runs `src/index.js` and performs the full job 
 
 1. Fetches future FlySafair departures for the next 24 hours.
 2. Uses the latest stored `departure.scheduled` in Firestore as the start of that window, so it does not repeatedly request the full horizon.
-3. Checks flights that are more than 1 hour past their scheduled departure or arrival and still miss the relevant actual timestamp.
-4. Requests movement data for those flights and updates `departure.actual`, `arrival.actual`, `status`, and `cancelled`.
-5. Settles bets immediately when a flight becomes final by getting an actual arrival time or being marked cancelled.
+3. Stores new flights with `departure.actual` and `arrival.actual` set to `null`.
+4. Checks flights that are more than 1 hour past their scheduled arrival and still miss either actual timestamp.
+5. Requests movement data for those flights, using only `revisedTime.utc` to update `departure.actual`, `arrival.actual`, `status`, and `cancelled`.
+6. Settles bets immediately when a flight becomes final by getting an actual arrival time or being marked cancelled.
 
 Firestore is the only source of truth. The repository does not store synced flight data files.
 
@@ -30,14 +31,14 @@ New flight documents use this shape:
       "code": "CPT"
     },
     "scheduled": "2026-04-10T16:13:12.973Z",
-    "actual": "2026-04-10T16:13:12.973Z"
+    "actual": null
   },
   "arrival": {
     "airport": {
       "code": "JNB"
     },
     "scheduled": "2026-04-10T16:13:12.973Z",
-    "actual": "2026-04-10T16:13:12.973Z"
+    "actual": null
   },
   "aircraft": {
     "model": "Boeing 737-800"
@@ -48,6 +49,8 @@ New flight documents use this shape:
 ```
 
 All stored timestamps are UTC ISO 8601 strings.
+
+The worker only fills `departure.actual` and `arrival.actual` from AeroDataBox `revisedTime.utc`, and only after the flight is at least 1 hour past `arrival.scheduled`.
 
 ## Bet settlement rules
 
@@ -65,7 +68,7 @@ Bets are read by `flight_id`, and only bets with `settled !== true` are processe
 
 ## Cancelled flights
 
-If a flight is more than 1 hour past its scheduled arrival and the movement lookup still does not provide an actual arrival, the worker marks the flight with:
+If a flight is more than 1 hour past its scheduled arrival and the movement lookup still does not provide an `arrival.revisedTime.utc`, the worker marks the flight with:
 
 ```json
 {
