@@ -258,45 +258,11 @@ async function main() {
 
     console.log(`Checking movement for ${doc.id}`);
 
-    const data = await requestJson(
+    const response = await requestJson(
       `/flights/number/${encodeURIComponent(`${flight.airline.iata || "FA"}${flight.flight}`)}/${formatLocalDate(departureDate)}?dateLocalRole=Departure`,
     );
 
-    const movementEntries = Array.isArray(data)
-      ? data
-      : data?.departure || data?.arrival
-        ? [data]
-        : [
-            ...(data?.flights || []),
-            ...(data?.departures || []),
-            ...(data?.arrivals || []),
-          ];
-
-    let movement = movementEntries[0] || null;
-    let closestDifference = Number.POSITIVE_INFINITY;
-
-    for (const entry of movementEntries) {
-      if (
-        entry.departure?.airport?.iata !== flight.departure.airport.code ||
-        entry.arrival?.airport?.iata !== flight.arrival.airport.code
-      ) {
-        continue;
-      }
-
-      const movementDeparture = toDate(
-        entry.departure.scheduledTime.utc ||
-          entry.departure.scheduledTime.local ||
-          entry.departure.scheduledTime,
-      );
-      const difference = Math.abs(
-        movementDeparture.getTime() - departureDate.getTime(),
-      );
-
-      if (difference < closestDifference) {
-        movement = entry;
-        closestDifference = difference;
-      }
-    }
+    let movement = response[0] || null;
 
     const departureActual = toUtcIso(movement?.departure?.revisedTime?.utc);
     const arrivalActual = toUtcIso(movement?.arrival?.revisedTime?.utc);
