@@ -4,14 +4,14 @@ FlySafair flight sync and bet settlement worker powered by the [AeroDataBox API]
 
 ## What it does
 
-An hourly GitHub Actions workflow runs `src/index.js` and performs the full job in one pass:
+An hourly GitHub Actions workflow runs two scripts in sequence:
 
-1. Fetches future FlySafair departures for the next 12 hours, limited to flights where both airports are `JNB` or `CPT`.
-2. Uses the latest stored `departure.scheduled` from those JNB/CPT flights in Firestore as the start of that window, so it does not repeatedly request the full horizon.
-3. Stores new flights with `departure.actual` and `arrival.actual` set to `null`.
-4. Checks flights that are more than 1 hour past their scheduled arrival and still miss either actual timestamp.
-5. Requests movement data for those flights, using only `revisedTime.utc` to update `departure.actual`, `arrival.actual`, `status`, and `cancelled`.
-6. Settles bets immediately when a flight becomes final by getting an actual arrival time or being marked cancelled.
+1. `src/sync.js` fetches future FlySafair departures for the next 12 hours, limited to flights where both airports are `JNB` or `CPT`.
+2. `src/sync.js` uses the latest stored `departure.scheduled` from those JNB/CPT flights in Firestore as the start of that window, so it does not repeatedly request the full horizon.
+3. `src/sync.js` stores new flights with `departure.actual` and `arrival.actual` set to `null`.
+4. `src/index.js` checks flights that are more than 1 hour past their scheduled arrival and still miss either actual timestamp.
+5. `src/index.js` requests movement data for those flights, using only `revisedTime.utc` to update `departure.actual`, `arrival.actual`, `status`, and `cancelled`.
+6. `src/index.js` settles bets immediately when a flight becomes final by getting an actual arrival time or being marked cancelled.
 
 Firestore is the only source of truth. The repository does not store synced flight data files.
 
@@ -89,6 +89,7 @@ That cancelled state is then used for settlement. There is no separate `settled`
 ## Local development
 
 ```bash
+AERODATABOX_API_KEY=your_key FIREBASE_SERVICE_ACCOUNT='{"type":"service_account",...}' node src/sync.js
 AERODATABOX_API_KEY=your_key FIREBASE_SERVICE_ACCOUNT='{"type":"service_account",...}' node src/index.js
 ```
 

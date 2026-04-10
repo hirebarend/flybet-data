@@ -1,11 +1,8 @@
 const { initializeApp, cert } = require("firebase-admin/app");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
-const { findLastFlight, findFutureDepartingFlights } = require("./data");
 
-const AIRPORTS = ["JNB", "CPT"];
 const API_BASE_URL = "https://aerodatabox.p.rapidapi.com";
 const API_DELAY_MS = 5000;
-const FUTURE_WINDOW_HOURS = 12;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
 const MINIMUM_PROFIT = 25;
@@ -177,33 +174,6 @@ async function main() {
 
   const db = getFirestore();
   const now = new Date();
-  const lastFlight = await findLastFlight(db);
-
-  if (from < to) {
-    for (const departureAirportCode of AIRPORTS) {
-      const from =
-        lastFlight && toDate(lastFlight.departure.scheduled) > now
-          ? toDate(lastFlight.departure.scheduled)
-          : now;
-
-      const to = new Date(now.getTime() + FUTURE_WINDOW_HOURS * ONE_HOUR_MS);
-
-      const flights = (
-        await findFutureDepartingFlights(departureAirportCode, from, to)
-      ).filter(
-        (flight) =>
-          flight.airline.iata === "FA" &&
-          AIRPORTS.includes(flight.arrival.airport.code),
-      );
-
-      for (const flight of flights) {
-        await db.collection("flights").doc(flight.id).set(flight, {
-          merge: true,
-        });
-      }
-    }
-  }
-
   const flights = (
     await db
       .collection("flights")
