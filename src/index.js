@@ -63,7 +63,7 @@ function calculatePayouts(bets, winningOutcome, marketOutcomes) {
   const losers = marketBets.filter((bet) => bet.outcome !== winningOutcome);
   const totalWinnerStake = winners.reduce((sum, bet) => sum + bet.amount, 0);
   const totalLoserStake = losers.reduce((sum, bet) => sum + bet.amount, 0);
-  const payouts = [];
+  const payouts = new Map();
 
   for (const bet of winners) {
     const proportionalShare =
@@ -71,134 +71,103 @@ function calculatePayouts(bets, winningOutcome, marketOutcomes) {
         ? 0
         : Math.round((bet.amount / totalWinnerStake) * totalLoserStake);
 
-    payouts.push({
-      betId: bet.id,
-      userId: bet.userId,
-      payout: bet.amount + Math.max(proportionalShare, MINIMUM_PROFIT),
-    });
+    payouts.set(
+      bet.id,
+      bet.amount + Math.max(proportionalShare, MINIMUM_PROFIT),
+    );
   }
 
   for (const bet of losers) {
-    payouts.push({
-      betId: bet.id,
-      userId: bet.userId,
-      payout: 0,
-    });
+    payouts.set(bet.id, 0);
   }
 
   return payouts;
 }
 
 async function settleFlightBets(db, flightId) {
-  const flightRef = db.collection("flights").doc(flightId);
-  let unsettledBetCount = 0;
-  let winningPayoutCount = 0;
-  let settled = false;
+  const flightSnapshot = await db.collection("flights").doc(flightId).get();
 
-  await db.runTransaction(async (transaction) => {
-    const flightSnapshot = await transaction.get(flightRef);
-
-    if (!flightSnapshot.exists) {
-      return;
-    }
-
-    const flight = flightSnapshot.data();
-
-    if (!flight.arrival.actual && flight.cancelled !== true) {
-      return;
-    }
-
-    const betsQuery = db.collection("bets").where("flight_id", "==", flightId);
-    const betsSnapshot = await transaction.get(betsQuery);
-    const unsettledBets = betsSnapshot.docs
-      .map((doc) => ({ id: doc.id, ...doc.data() }))
-      .filter((bet) => bet.settled !== true);
-
-    if (unsettledBets.length === 0) {
-      return;
-    }
-
-    unsettledBetCount = unsettledBets.length;
-
-    const departureDelayMs =
-      toDate(flight.departure.actual).getTime() -
-      toDate(flight.departure.scheduled).getTime();
-    const arrivalDelayMs = flight.arrival.actual
-      ? toDate(flight.arrival.actual).getTime() -
-        toDate(flight.arrival.scheduled).getTime()
-      : Number.POSITIVE_INFINITY;
-
-    const markets = [
-      {
-        outcomes: ["onTimeDeparture", "delayedDeparture"],
-        winner:
-          !flight.departure.actual || departureDelayMs > FIFTEEN_MINUTES_MS
-            ? "delayedDeparture"
-            : "onTimeDeparture",
-      },
-      {
-        outcomes: ["onTimeArrival", "delayedArrival"],
-        winner:
-          !flight.arrival.actual || arrivalDelayMs > FIFTEEN_MINUTES_MS
-            ? "delayedArrival"
-            : "onTimeArrival",
-      },
-      {
-        outcomes: ["cancelled", "notCancelled"],
-        winner: flight.cancelled === true ? "cancelled" : "notCancelled",
-      },
-    ];
-
-    const userCredits = new Map();
-    const allPayouts = [];
-
-    for (const market of markets) {
-      const payouts = calculatePayouts(
-        unsettledBets,
-        market.winner,
-        market.outcomes,
-      );
-
-      for (const payout of payouts) {
-        allPayouts.push(payout);
-
-        if (payout.payout > 0) {
-          userCredits.set(
-            payout.userId,
-            (userCredits.get(payout.userId) || 0) + payout.payout,
-          );
-        }
-      }
-    }
-
-    winningPayoutCount = allPayouts.filter(
-      (payout) => payout.payout > 0,
-    ).length;
-
-    for (const [userId, credit] of userCredits) {
-      transaction.update(db.collection("users").doc(userId), {
-        balance: FieldValue.increment(credit),
-      });
-    }
-
-    for (const payout of allPayouts) {
-      transaction.update(db.collection("bets").doc(payout.betId), {
-        settled: true,
-        payout: payout.payout,
-      });
-    }
-
-    settled = true;
-  });
-
-  if (settled) {
-    console.log(
-      `  Settled ${unsettledBetCount} bets for ${flightId} (${winningPayoutCount} winning payouts)`,
-    );
+  if (!flightSnapshot.exists) {
     return;
   }
 
-  console.log(`  No unsettled bets to process for ${flightId}`);
+  const flight = flightSnapshot.data();
+
+  if (!flight.arrival.actual && flight.cancelled !== true) {
+    return;
+  }
+
+  const bets = (
+    await db.collection("bets").where("flight_id", "==", flightId).get()
+  ).docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .filter((bet) => bet.settled !== true);
+
+  if (bets.length === 0) {
+    return;
+  }
+
+  const departureDelayMs =
+    toDate(flight.departure.actual).getTime() -
+    toDate(flight.departure.scheduled).getTime();
+
+  const arrivalDelayMs = flight.arrival.actual
+    ? toDate(flight.arrival.actual).getTime() -
+      toDate(flight.arrival.scheduled).getTime()
+    : Number.POSITIVE_INFINITY;
+
+  const markets = [
+    {
+      outcomes: ["onTimeDeparture", "delayedDeparture"],
+      winner:
+        !flight.departure.actual || departureDelayMs > FIFTEEN_MINUTES_MS
+          ? "delayedDeparture"
+          : "onTimeDeparture",
+    },
+    {
+      outcomes: ["onTimeArrival", "delayedArrival"],
+      winner:
+        !flight.arrival.actual || arrivalDelayMs > FIFTEEN_MINUTES_MS
+          ? "delayedArrival"
+          : "onTimeArrival",
+    },
+    {
+      outcomes: ["cancelled", "notCancelled"],
+      winner: flight.cancelled === true ? "cancelled" : "notCancelled",
+    },
+  ];
+
+  const totalPayouts = new Map();
+
+  for (const market of markets) {
+    const marketPayouts = calculatePayouts(
+      bets,
+      market.winner,
+      market.outcomes,
+    );
+
+    for (const [betId, payout] of marketPayouts) {
+      totalPayouts.set(betId, (totalPayouts.get(betId) || 0) + payout);
+    }
+  }
+
+  for (const bet of bets) {
+    const payout = totalPayouts.get(bet.id) || 0;
+
+    if (payout > 0) {
+      await db
+        .collection("users")
+        .doc(bet.userId)
+        .update({
+          balance: FieldValue.increment(payout),
+        });
+    }
+
+    await db.collection("bets").doc(bet.id).update({
+      settled: true,
+      payout,
+    });
+  }
 }
 
 async function main() {
