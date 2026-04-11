@@ -6,6 +6,10 @@ const AIRPORT_CODES = ["JNB", "CPT"];
 const FUTURE_WINDOW_HOURS = 12;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function toDate(value) {
   if (typeof value?.toDate === "function") {
     return value.toDate();
@@ -32,6 +36,8 @@ async function main() {
     return;
   }
 
+  await sleep(5000);
+
   for (const airportCode of AIRPORT_CODES) {
     const flights = (
       await findFutureDepartingFlights(airportCode, from, to)
@@ -46,6 +52,8 @@ async function main() {
         merge: true,
       });
     }
+
+    await sleep(5000);
   }
 }
 
