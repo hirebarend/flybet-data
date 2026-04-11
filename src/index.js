@@ -33,7 +33,7 @@ function formatLocalDate(date) {
 }
 
 async function requestJson(apiPath) {
-  console.log(`  GET ${apiPath}`);
+  console.log(`Requesting GET ${API_BASE_URL}${apiPath}`);
 
   const response = await fetch(`${API_BASE_URL}${apiPath}`, {
     headers: {
@@ -179,6 +179,7 @@ async function main() {
   const db = getFirestore();
   console.log("Starting settlement run");
   const now = new Date();
+  console.log(`Querying unsettled flights`);
   const flights = (
     await db
       .collection("flights")
@@ -202,7 +203,7 @@ async function main() {
     const flight = doc.data();
     const departureDate = toDate(flight.departure.scheduled);
 
-    console.log(`Checking movement for ${doc.id}`);
+    console.log(`Checking movement for ${flight.airline.iata || "FA"}${flight.flight} (${doc.id})`);
 
     const response = await requestJson(
       `/flights/number/${encodeURIComponent(`${flight.airline.iata || "FA"}${flight.flight}`)}/${formatLocalDate(departureDate)}?dateLocalRole=Departure`,
@@ -237,6 +238,7 @@ async function main() {
     }
 
     if (Object.keys(updates).length > 0) {
+      console.log(`Updating flight ${doc.id}`);
       await db.collection("flights").doc(doc.id).update(updates);
     }
 
@@ -247,7 +249,7 @@ async function main() {
     await sleep(API_DELAY_MS);
   }
 
-  console.log("Run complete");
+  console.log("Completed settlement run");
 }
 
 main().catch((error) => {

@@ -33,10 +33,10 @@ async function main() {
       : now;
   const to = new Date(now.getTime() + FUTURE_WINDOW_HOURS * ONE_HOUR_MS);
 
-  console.log(`Sync window ${from.toISOString()} -> ${to.toISOString()}`);
+  console.log(`Syncing flights from ${from.toISOString()} to ${to.toISOString()}`);
 
   if (from >= to) {
-    console.log("No sync needed for current window");
+    console.log("Skipping sync, window is empty");
     return;
   }
 
@@ -44,15 +44,14 @@ async function main() {
 
   for (const airportCode of AIRPORT_CODES) {
     console.log(`Fetching departures for ${airportCode}`);
-    const flights = (
-      await findFutureDepartingFlights(airportCode, from, to)
-    ).filter(
+    const allFlights = await findFutureDepartingFlights(airportCode, from, to);
+    const flights = allFlights.filter(
       (flight) =>
         flight.airline.iata === "FA" &&
         AIRPORT_CODES.includes(flight.arrival.airport.code),
     );
 
-    console.log(`Saving ${flights.length} matching flights for ${airportCode}`);
+    console.log(`Saving ${flights.length} flights for ${airportCode}`);
 
     for (const flight of flights) {
       await db.collection("flights").doc(flight.id).set(flight, {
@@ -63,7 +62,7 @@ async function main() {
     await sleep(5000);
   }
 
-  console.log("Run complete");
+  console.log("Completed sync run");
 }
 
 main().catch((error) => {

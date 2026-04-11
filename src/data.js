@@ -29,6 +29,8 @@ function createFlightId(airlineIata, flightNumber, scheduledDeparture) {
 }
 
 async function requestJson(apiPath) {
+  console.log(`Requesting GET ${API_BASE_URL}${apiPath}`);
+
   const response = await fetch(`${API_BASE_URL}${apiPath}`, {
     headers: {
       Accept: "application/json",
