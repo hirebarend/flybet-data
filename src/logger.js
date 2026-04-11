@@ -5,7 +5,10 @@ function formatLog(level, component, message, meta) {
   const metaStr = meta
     ? " " +
       Object.entries(meta)
-        .map(([k, v]) => `${k}=${v}`)
+        .map(([k, v]) => {
+          const s = typeof v === "object" ? JSON.stringify(v) : String(v);
+          return s.includes(" ") ? `${k}="${s}"` : `${k}=${s}`;
+        })
         .join(" ")
     : "";
 

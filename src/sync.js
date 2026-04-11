@@ -34,7 +34,7 @@ async function main() {
   const lastFlight = await findLastFlight(db);
 
   if (lastFlight) {
-    log.info(`Last flight found`, { scheduled: lastFlight.departure.scheduled });
+    log.info(`Last flight found`, { scheduled: toDate(lastFlight.departure.scheduled).toISOString() });
   } else {
     log.info("No existing flights found in database");
   }

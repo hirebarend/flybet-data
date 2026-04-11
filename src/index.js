@@ -263,7 +263,7 @@ async function main() {
     }
 
     if (Object.keys(updates).length > 0) {
-      log.info(`Updating flight document`, { flightId: doc.id, fields: Object.keys(updates).join(",") });
+      log.info(`Updating flight document`, { flightId: doc.id, fields: Object.keys(updates).join(", ") });
       await db.collection("flights").doc(doc.id).update(updates);
     } else {
       log.debug(`No updates needed`, { flightId: doc.id });
