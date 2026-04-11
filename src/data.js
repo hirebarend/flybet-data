@@ -1,4 +1,7 @@
 const crypto = require("crypto");
+const { createLogger } = require("./logger");
+
+const log = createLogger("data");
 
 const API_BASE_URL = "https://aerodatabox.p.rapidapi.com";
 const SAST_OFFSET_MS = 2 * 60 * 60 * 1000;
@@ -29,6 +32,9 @@ function createFlightId(airlineIata, flightNumber, scheduledDeparture) {
 }
 
 async function requestJson(apiPath) {
+  log.info(`GET ${API_BASE_URL}${apiPath}`);
+  const start = Date.now();
+
   const response = await fetch(`${API_BASE_URL}${apiPath}`, {
     headers: {
       Accept: "application/json",
@@ -37,14 +43,20 @@ async function requestJson(apiPath) {
     },
   });
 
+  const duration = Date.now() - start;
+
   if (response.status === 204) {
+    log.info(`GET ${apiPath} completed`, { status: 204, duration: `${duration}ms` });
     return null;
   }
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    const body = await response.text();
+    log.error(`GET ${apiPath} failed`, { status: response.status, duration: `${duration}ms` });
+    throw new Error(`HTTP ${response.status}: ${body}`);
   }
 
+  log.info(`GET ${apiPath} completed`, { status: response.status, duration: `${duration}ms` });
   return response.json();
 }
 

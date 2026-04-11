@@ -1,5 +1,8 @@
 const { initializeApp, cert } = require("firebase-admin/app");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { createLogger } = require("./logger");
+
+const log = createLogger("settle");
 
 const API_BASE_URL = "https://aerodatabox.p.rapidapi.com";
 const API_DELAY_MS = 5000;
@@ -33,7 +36,8 @@ function formatLocalDate(date) {
 }
 
 async function requestJson(apiPath) {
-  console.log(`  GET ${apiPath}`);
+  log.info(`GET ${API_BASE_URL}${apiPath}`);
+  const start = Date.now();
 
   const response = await fetch(`${API_BASE_URL}${apiPath}`, {
     headers: {
@@ -43,14 +47,20 @@ async function requestJson(apiPath) {
     },
   });
 
+  const duration = Date.now() - start;
+
   if (response.status === 204) {
+    log.info(`GET ${apiPath} completed`, { status: 204, duration: `${duration}ms` });
     return null;
   }
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    const body = await response.text();
+    log.error(`GET ${apiPath} failed`, { status: response.status, duration: `${duration}ms` });
+    throw new Error(`HTTP ${response.status}: ${body}`);
   }
 
+  log.info(`GET ${apiPath} completed`, { status: response.status, duration: `${duration}ms` });
   return response.json();
 }
 
@@ -82,15 +92,18 @@ function calculatePayouts(bets, winningOutcome, marketOutcomes) {
 }
 
 async function settleFlightBets(db, flightId) {
+  log.debug(`Loading flight document`, { flightId });
   const flightSnapshot = await db.collection("flights").doc(flightId).get();
 
   if (!flightSnapshot.exists) {
+    log.warn(`Flight document not found, skipping`, { flightId });
     return;
   }
 
   const flight = flightSnapshot.data();
 
   if (!flight.arrival.actual && flight.cancelled !== true) {
+    log.debug(`Flight not yet arrived or cancelled, skipping settlement`, { flightId });
     return;
   }
 
@@ -101,10 +114,11 @@ async function settleFlightBets(db, flightId) {
     .filter((bet) => bet.settled !== true);
 
   if (bets.length === 0) {
+    log.debug(`No unsettled bets found`, { flightId });
     return;
   }
 
-  console.log(`Settling ${bets.length} bets for ${flightId}`);
+  log.info(`Settling bets`, { flightId, count: bets.length });
 
   const departureDelayMs =
     toDate(flight.departure.actual).getTime() -
@@ -154,6 +168,7 @@ async function settleFlightBets(db, flightId) {
     const payout = totalPayouts.get(bet.id) || 0;
 
     if (payout > 0) {
+      log.debug(`Crediting user balance`, { betId: bet.id, userId: bet.userId, payout });
       await db
         .collection("users")
         .doc(bet.userId)
@@ -166,18 +181,22 @@ async function settleFlightBets(db, flightId) {
       settled: true,
       payout,
     });
+
+    log.debug(`Bet settled`, { betId: bet.id, payout });
   }
 
-  console.log(`Settled ${bets.length} bets for ${flightId}`);
+  log.info(`Settlement complete`, { flightId, betsSettled: bets.length });
 }
 
 async function main() {
+  log.info("Process starting");
+
   initializeApp({
     credential: cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)),
   });
 
   const db = getFirestore();
-  console.log("Starting settlement run");
+  log.info("Firebase initialized");
   const now = new Date();
   const flights = (
     await db
@@ -196,19 +215,23 @@ async function main() {
     );
   });
 
-  console.log(`Found ${flights.length} flights to check`);
+  log.info(`Found flights to check`, { count: flights.length });
 
   for (const doc of flights) {
     const flight = doc.data();
     const departureDate = toDate(flight.departure.scheduled);
 
-    console.log(`Checking movement for ${doc.id}`);
+    log.info(`Checking movement`, { flightId: doc.id, flight: `${flight.airline.iata || "FA"}${flight.flight}`, scheduled: flight.departure.scheduled });
 
     const response = await requestJson(
       `/flights/number/${encodeURIComponent(`${flight.airline.iata || "FA"}${flight.flight}`)}/${formatLocalDate(departureDate)}?dateLocalRole=Departure`,
     );
 
     let movement = response[0] || null;
+
+    if (!movement) {
+      log.warn(`No movement data returned`, { flightId: doc.id });
+    }
 
     const departureActual = toUtcIso(movement?.departure?.revisedTime?.utc);
     const arrivalActual = toUtcIso(movement?.arrival?.revisedTime?.utc);
@@ -225,32 +248,39 @@ async function main() {
 
     if (!flight.departure.actual && departureActual) {
       updates["departure.actual"] = departureActual;
+      log.debug(`Departure actual found`, { flightId: doc.id, departureActual });
     }
 
     if (!flight.arrival.actual && arrivalActual) {
       updates["arrival.actual"] = arrivalActual;
       updates.cancelled = false;
       shouldSettle = true;
+      log.debug(`Arrival actual found`, { flightId: doc.id, arrivalActual });
     } else if (!flight.arrival.actual) {
       updates.cancelled = true;
       shouldSettle = true;
+      log.debug(`No arrival data, marking as cancelled`, { flightId: doc.id });
     }
 
     if (Object.keys(updates).length > 0) {
+      log.info(`Updating flight document`, { flightId: doc.id, fields: Object.keys(updates).join(",") });
       await db.collection("flights").doc(doc.id).update(updates);
+    } else {
+      log.debug(`No updates needed`, { flightId: doc.id });
     }
 
     if (shouldSettle) {
       await settleFlightBets(db, doc.id);
     }
 
+    log.debug(`Waiting before next request`, { delay: `${API_DELAY_MS}ms` });
     await sleep(API_DELAY_MS);
   }
 
-  console.log("Run complete");
+  log.info("Process complete");
 }
 
 main().catch((error) => {
-  console.error("Fatal:", error);
+  log.error(`Fatal: ${error.message}`);
   process.exit(1);
 });
