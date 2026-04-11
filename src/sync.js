@@ -24,6 +24,7 @@ async function main() {
   });
 
   const db = getFirestore();
+  console.log("Starting sync run");
   const now = new Date();
   const lastFlight = await findLastFlight(db);
   const from =
@@ -32,13 +33,17 @@ async function main() {
       : now;
   const to = new Date(now.getTime() + FUTURE_WINDOW_HOURS * ONE_HOUR_MS);
 
+  console.log(`Sync window ${from.toISOString()} -> ${to.toISOString()}`);
+
   if (from >= to) {
+    console.log("No sync needed for current window");
     return;
   }
 
   await sleep(5000);
 
   for (const airportCode of AIRPORT_CODES) {
+    console.log(`Fetching departures for ${airportCode}`);
     const flights = (
       await findFutureDepartingFlights(airportCode, from, to)
     ).filter(
@@ -46,6 +51,8 @@ async function main() {
         flight.airline.iata === "FA" &&
         AIRPORT_CODES.includes(flight.arrival.airport.code),
     );
+
+    console.log(`Saving ${flights.length} matching flights for ${airportCode}`);
 
     for (const flight of flights) {
       await db.collection("flights").doc(flight.id).set(flight, {
@@ -55,6 +62,8 @@ async function main() {
 
     await sleep(5000);
   }
+
+  console.log("Run complete");
 }
 
 main().catch((error) => {

@@ -104,6 +104,8 @@ async function settleFlightBets(db, flightId) {
     return;
   }
 
+  console.log(`Settling ${bets.length} bets for ${flightId}`);
+
   const departureDelayMs =
     toDate(flight.departure.actual).getTime() -
     toDate(flight.departure.scheduled).getTime();
@@ -165,6 +167,8 @@ async function settleFlightBets(db, flightId) {
       payout,
     });
   }
+
+  console.log(`Settled ${bets.length} bets for ${flightId}`);
 }
 
 async function main() {
@@ -173,6 +177,7 @@ async function main() {
   });
 
   const db = getFirestore();
+  console.log("Starting settlement run");
   const now = new Date();
   const flights = (
     await db
@@ -190,6 +195,8 @@ async function main() {
       (!doc.data().departure?.actual || !doc.data().arrival?.actual)
     );
   });
+
+  console.log(`Found ${flights.length} flights to check`);
 
   for (const doc of flights) {
     const flight = doc.data();
